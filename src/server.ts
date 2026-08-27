@@ -10,9 +10,11 @@ import {
   ReadResourceRequestSchema
 } from '@modelcontextprotocol/sdk/types.js';
 import { getProvider } from './provider-registry.ts';
+import { yahooFleamarketProvider } from './providers/yahoo/index.ts';
 import { MarketplaceError } from './errors.ts';
 import type { SearchParams } from './types.ts';
 import type { CategoriesOptions } from './types.ts';
+import type { YahooCategoriesOptions, YahooSearchParams } from './providers/yahoo/types.ts';
 
 export function createServer(): Server {
   const server = new Server(
@@ -76,6 +78,61 @@ export function createServer(): Server {
             root_only: { type: 'boolean', default: false }
           }
         }
+      },
+      {
+        name: 'yahoo_fleamarket_search',
+        description: 'Search Yahoo! Flea Market (Yahoo!フリマ) listings via its structured JSON API.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            keyword: { type: 'string', description: 'Search keyword (UTF-8, Japanese supported).' },
+            exclude_keyword: { type: 'string', description: 'Words to exclude; applied natively via query and re-checked against titles.' },
+            category_id: { oneOf: [{ type: 'integer' }, { type: 'array', items: { type: 'integer' } }, { type: 'string', pattern: '^\\d+(,\\d+)*$' }], description: 'Yahoo genre category id(s).' },
+            price_min: { type: 'integer', minimum: 0 },
+            price_max: { type: 'integer', minimum: 0 },
+            condition: { type: ['array', 'string'], description: 'Item condition code(s): new, used10, used20, used40, used60.' },
+            status: { enum: ['on_sale', 'sold_out'], description: 'Listing status; defaults to on_sale.' },
+            seller_id: { type: 'string', description: 'Restrict to a seller id.' },
+            sort: { enum: ['price'], description: 'Sort key; omit for relevance.' },
+            order: { enum: ['asc', 'desc'] },
+            limit: { type: 'integer', minimum: 1, maximum: 100 },
+            offset: { type: 'integer', minimum: 0 }
+          }
+        }
+      },
+      {
+        name: 'yahoo_fleamarket_get_item',
+        description: 'Get normalized Yahoo! Flea Market item details (description, photos, condition, delivery, seller) from an item ID or item URL.',
+        inputSchema: {
+          type: 'object',
+          required: ['item'],
+          properties: {
+            item: { type: 'string', minLength: 1 }
+          }
+        }
+      },
+      {
+        name: 'yahoo_fleamarket_get_categories',
+        description: 'Get and filter the Yahoo! Flea Market category tree. Use parent_id to list children, keyword to search all levels.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            keyword: { type: 'string' },
+            parent_id: { type: ['integer', 'string'], pattern: '^\\d+$' },
+            root_only: { type: 'boolean', default: false }
+          }
+        }
+      },
+      {
+        name: 'yahoo_fleamarket_get_seller',
+        description: 'Get a Yahoo! Flea Market seller profile (rating, nickname) via the public users API.',
+        inputSchema: {
+          type: 'object',
+          required: ['seller_id'],
+          properties: {
+            seller_id: { type: 'string', minLength: 1 }
+          }
+        }
       }
     ]
   }));
@@ -101,6 +158,32 @@ export function createServer(): Server {
           if (args.parent_id !== undefined) categoriesOptions.parent_id = Number(args.parent_id);
           if (args.root_only !== undefined) categoriesOptions.root_only = Boolean(args.root_only);
           const result = await getProvider('mercari').getCategories(categoriesOptions);
+          return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+        }
+        case 'yahoo_fleamarket_search': {
+          const result = await yahooFleamarketProvider.search(args as YahooSearchParams);
+          return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+        }
+        case 'yahoo_fleamarket_get_item': {
+          if (typeof args.item !== 'string') {
+            throw new MarketplaceError('MCP_INVALID_ARGUMENT', 'item must be a string');
+          }
+          const result = await yahooFleamarketProvider.getItem(args.item);
+          return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+        }
+        case 'yahoo_fleamarket_get_categories': {
+          const options: YahooCategoriesOptions = {};
+          if (typeof args.keyword === 'string') options.keyword = args.keyword;
+          if (args.parent_id !== undefined) options.parent_id = Number(args.parent_id);
+          if (args.root_only !== undefined) options.root_only = Boolean(args.root_only);
+          const result = await yahooFleamarketProvider.getCategories(options);
+          return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+        }
+        case 'yahoo_fleamarket_get_seller': {
+          if (typeof args.seller_id !== 'string') {
+            throw new MarketplaceError('MCP_INVALID_ARGUMENT', 'seller_id must be a string');
+          }
+          const result = await yahooFleamarketProvider.getSeller(args.seller_id);
           return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
         }
         default:

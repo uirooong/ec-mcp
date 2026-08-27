@@ -1,0 +1,21 @@
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+const url = process.env.EC_MCP_URL ?? 'http://localhost:3012/mcp';
+const c = new Client({ name: 'yahoo-e2e', version: '0.0.0' });
+await c.connect(new StreamableHTTPClientTransport(new URL(url)));
+const tools = (await c.listTools()).tools.map(t => t.name);
+console.log('tools=', tools.join(','));
+const s = await c.callTool({ name: 'yahoo_fleamarket_search', arguments: { keyword: 'iPhone', price_min: 10000, price_max: 20000, limit: 8 } });
+const d = JSON.parse(s.content[0].text);
+console.log('search: count=', d.items.length, 'allInRange=', d.items.every(i=>i.price>=10000&&i.price<=20000), 'sample=', d.items[0]?.name.slice(0,18), d.items[0]?.status);
+const cats = await c.callTool({ name: 'yahoo_fleamarket_get_categories', arguments: { parent_id: 2502 } });
+console.log('categories(parent=2502)=', JSON.parse(cats.content[0].text).slice(0,3).map(r=>`${r.id}:${r.name}`).join(', '));
+const kw = await c.callTool({ name: 'yahoo_fleamarket_get_categories', arguments: { keyword: 'ポケモン' } });
+console.log('categories(keyword=ポケモン)=', JSON.parse(kw.content[0].text).map(r=>`${r.id}:${r.pathNames.join('/')}`).join(' | '));
+const sellerId = d.items.find(i=>i.seller)?.seller?.id;
+if (sellerId){ const se = await c.callTool({ name:'yahoo_fleamarket_get_seller', arguments:{ seller_id: sellerId }}); console.log('seller=', JSON.parse(se.content[0].text).nickname); }
+const gi = await c.callTool({ name: 'yahoo_fleamarket_get_item', arguments: { item: `https://paypayfleamarket.yahoo.co.jp/item/${d.items[0]?.id}` } });
+console.log('get_item isError=', Boolean(gi.isError), 'code=', gi.structuredContent?.code, 'msg~=', String(gi.content[0].text).slice(0,60));
+const bad = await c.callTool({ name: 'yahoo_fleamarket_search', arguments: { category_id: 'abc' } });
+console.log('bad category isError=', Boolean(bad.isError), 'code=', bad.structuredContent?.code);
+await c.close(); process.exit(0);

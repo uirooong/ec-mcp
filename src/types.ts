@@ -4,7 +4,7 @@ export type StatusOption = 'on_sale' | 'trading' | 'sold_out';
 export type ShippingMethodOption = 'anonymous' | 'japan_post' | 'no_option';
 export type ItemTypeOption = 'beyond' | 'mercari';
 
-export type ListInput = number[] | string | undefined;
+export type ListInput = Array<number | string> | string | undefined;
 
 export interface SearchConditionInput {
   keyword?: string;
