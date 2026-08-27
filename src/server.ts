@@ -29,7 +29,7 @@ export function createServer(): Server {
           type: 'object',
           properties: {
             keyword: { type: 'string', description: 'Search keyword.' },
-            exclude_keyword: { type: 'string', description: 'Words to exclude; space separated is accepted by the upstream URL filter.' },
+            exclude_keyword: { type: 'string', description: 'Words to exclude; space-separated words are each excluded from item names.' },
             category_id: { oneOf: [{ type: 'integer' }, { type: 'array', items: { type: 'integer' } }, { type: 'string', pattern: '^\\d+(,\\d+)*$' }] },
             size_id: { oneOf: [{ type: 'integer' }, { type: 'array', items: { type: 'integer' } }, { type: 'string', pattern: '^\\d+(,\\d+)*$' }] },
             brand_id: { oneOf: [{ type: 'integer' }, { type: 'array', items: { type: 'integer' } }, { type: 'string', pattern: '^\\d+(,\\d+)*$' }] },

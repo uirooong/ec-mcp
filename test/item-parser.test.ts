@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { buildDetail, normalizeItemId } from '../src/providers/mercari/item.ts';
+import { buildCategoryTiers, buildItemDetail, normalizeItemId } from '../src/providers/mercari/item.ts';
 
 test('normalizes IDs and full URLs', () => {
   assert.equal(normalizeItemId('m48814528195'), 'm48814528195');
@@ -9,7 +9,7 @@ test('normalizes IDs and full URLs', () => {
 });
 
 test('normalizes SSR item payload', () => {
-  const detail = buildDetail({
+  const detail = buildItemDetail({
     id: 'm1',
     name: 'Item',
     price: 1100,
@@ -33,4 +33,19 @@ test('normalizes SSR item payload', () => {
   assert.equal(detail.condition_id, 1);
   assert.equal(detail.comments_count, 2);
   assert.equal(detail.likes_count, 11);
+});
+
+test('builds root-to-leaf category chain from ntiers and dedupes by id', () => {
+  const tiers = buildCategoryTiers({
+    parent_categories_ntiers: [
+      { id: 6386, name: 'ホビー・楽器・アート' },
+      { id: 79, name: '楽器・機材' },
+      { id: 724, name: '配信機器' },
+      { id: 6692, name: 'マイク' }
+    ],
+    item_category_ntiers: { id: 6693, name: 'コンデンサーマイク' },
+    // legacy field repeats ids already present; must not duplicate
+    item_category: { id: 6693, name: 'コンデンサーマイク', parent_category_id: 6692, root_category_id: 6386 }
+  });
+  assert.deepEqual(tiers.map(tier => tier.id), ['6386', '79', '724', '6692', '6693']);
 });

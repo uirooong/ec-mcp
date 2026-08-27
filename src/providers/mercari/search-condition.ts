@@ -1,7 +1,6 @@
-import {
-  ITEM_TYPE_ENUM, ORDER_ENUM, SHIPPING_METHOD_ENUM, SORT_ENUM, STATUS_ENUM
-} from './constants.ts';
+import { ITEM_TYPE_ENUM, ORDER_ENUM, SHIPPING_METHOD_ENUM, SORT_ENUM, STATUS_ENUM } from './constants.ts';
 import { normalizeList } from '../../url.ts';
+import { MercariUnsupportedFilterError } from '../../errors.ts';
 import type { SearchParams } from '../../types.ts';
 
 export interface ApiSearchCondition {
@@ -25,16 +24,18 @@ export interface ApiSearchCondition {
   createdAfterDate?: string;
   itemTypes: string[];
   skuIds: string[];
+  attributes: unknown[];
+  shopIds: string[];
+  excludeShippingMethodIds: string[];
 }
 
-function toNumbers(value: string[] | undefined): number[] {
-  if (!value) return [];
+function toNumbers(value: string[]): number[] {
   const result: number[] = [];
   for (const item of value) {
     const normalizedItem = /^[a-z]/i.test(item) && /g/i.test(item) ? item.slice(1) : item;
     const parsedValue = Number(normalizedItem);
     if (!Number.isFinite(parsedValue)) {
-      throw new Error(`Invalid numeric list value: ${item}`);
+      throw new MercariUnsupportedFilterError(`Invalid numeric filter value: ${item}`);
     }
     result.push(parsedValue);
   }
@@ -42,11 +43,18 @@ function toNumbers(value: string[] | undefined): number[] {
 }
 
 function mapUnique(value: string[], map: Record<string, string>): string[] {
-  return [...new Set(value.map(item => map[item] ?? item))];
+  return [...new Set(value.map(item => {
+    const mapped = map[item];
+    if (mapped === undefined) {
+      throw new MercariUnsupportedFilterError(`Unsupported filter value: ${item}`);
+    }
+    return mapped;
+  }))];
 }
 
 export function buildApiSearchCondition(params: SearchParams): ApiSearchCondition {
   const statuses = mapUnique(normalizeList(params.status), STATUS_ENUM);
+  // Mercari's web client always pairs sold_out with trading so in-progress sales stay visible.
   if (statuses.includes(STATUS_ENUM.sold_out)) {
     statuses.push(STATUS_ENUM.trading);
   }
@@ -74,12 +82,13 @@ export function buildApiSearchCondition(params: SearchParams): ApiSearchConditio
     ),
     skuIds: Array.isArray(params.sku_ids)
       ? params.sku_ids.flatMap(item => item.split(',')).map(item => item.trim()).filter(Boolean)
-      : params.sku_ids?.split(',').map(item => item.trim()).filter(Boolean) ?? []
+      : params.sku_ids?.split(',').map(item => item.trim()).filter(Boolean) ?? [],
+    attributes: [],
+    shopIds: [],
+    excludeShippingMethodIds: []
   };
   if (params.created_after_date !== undefined && params.created_after_date.length > 0) {
     conditions.createdAfterDate = params.created_after_date;
   }
   return conditions;
 }
-
-Object.assign(STATUS_ENUM, {});

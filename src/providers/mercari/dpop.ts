@@ -1,7 +1,6 @@
 import { webcrypto } from 'node:crypto';
 
 const encoder = new TextEncoder();
-const ZERO_UUID = '00000000-0000-0000-0000-000000000000';
 
 function base64urlEncode(input: Uint8Array | string): string {
   const bytes = typeof input === 'string' ? encoder.encode(input) : input;
@@ -12,32 +11,38 @@ function base64urlEncode(input: Uint8Array | string): string {
   return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 }
 
-let keyPairPromise: Promise<DpopKeyPair> | undefined;
+// Use the node:crypto webcrypto CryptoKey type rather than the DOM lib's, which
+// diverge under @types/node and would otherwise fail assignability.
+type DpopCryptoKey = webcrypto.CryptoKey;
 
 export interface DpopKeyPair {
-  privateKey: CryptoKey;
+  privateKey: DpopCryptoKey;
+  publicKey: DpopCryptoKey;
 }
 
-async function getKeyPair(): Promise<DpopKeyPair> {
-  if (!keyPairPromise) {
+let keyPairPromise: Promise<DpopKeyPair> | undefined;
+
+function getKeyPair(): Promise<DpopKeyPair> {
+  if (keyPairPromise === undefined) {
     keyPairPromise = webcrypto.subtle.generateKey(
       { name: 'ECDSA', namedCurve: 'P-256' },
       true,
       ['sign']
-    ).then(privateKey => {
-      if (privateKey instanceof CryptoKey) {
-        return { privateKey };
-      }
-      const privateKeyPair = privateKey as { privateKey: CryptoKey };
-      return { privateKey: privateKeyPair.privateKey };
-    });
+    ).then(keyPair => ({
+      privateKey: keyPair.privateKey,
+      publicKey: keyPair.publicKey
+    }));
   }
   return keyPairPromise;
 }
 
-export async function generateDpopJwt(method: string, fullUrl: string): Promise<string> {
-  const { privateKey } = await getKeyPair();
-  const jwk = await webcrypto.subtle.exportKey('jwk', privateKey);
+export async function generateDpopJwt(
+  method: string,
+  fullUrl: string,
+  deviceId = crypto.randomUUID()
+): Promise<string> {
+  const { privateKey, publicKey } = await getKeyPair();
+  const jwk = await webcrypto.subtle.exportKey('jwk', publicKey);
   delete jwk.key_ops;
   delete jwk.ext;
 
@@ -51,7 +56,7 @@ export async function generateDpopJwt(method: string, fullUrl: string): Promise<
     jti: crypto.randomUUID(),
     htu: fullUrl,
     htm: method.toUpperCase(),
-    uuid: ZERO_UUID
+    uuid: deviceId
   };
   const payload = base64urlEncode(JSON.stringify(payloadObject));
   const signingInput = `${header}.${payload}`;

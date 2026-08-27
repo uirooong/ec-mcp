@@ -36,8 +36,11 @@ export interface SearchParams extends SearchConditionInput {
   provider?: string;
 }
 
+export type ItemTypeResult = 'mercari' | 'beyond' | 'unknown';
+
 export interface SearchItem {
   id: string;
+  item_type: ItemTypeResult;
   name: string;
   price: number;
   status: StatusOption | 'unknown';

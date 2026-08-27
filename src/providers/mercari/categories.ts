@@ -1,76 +1,64 @@
-import { fetchJson } from '../../http.ts';
+import { generateDpopJwt } from './dpop.ts';
+import { CATEGORY_CACHE_TTL_MS, ENDPOINTS } from './constants.ts';
+import { debugLog, mercariRest } from './rest-client.ts';
 import { MarketplaceError } from '../../errors.ts';
-import {
-  BROWSER_ACCEPT_LANGUAGE, CRAWLER_USER_AGENT, MERCARI_MASTER_BASE_URL
-} from './constants.ts';
-import { fetchCategoriesFromPage } from './category-html.ts';
 import type { CategoriesOptions, CategoryRecord } from '../../types.ts';
 
 interface MasterCategory {
-  id: string | number;
+  id?: string | number;
   name?: string;
   status?: string;
-  order?: number;
-  parent_category_id?: string | number;
-  select_size_group_id?: string | number;
+  displayOrder?: string | number;
+  parentCategoryId?: string | number;
 }
 
-interface MasterDataset<T> {
-  data?: T[];
+interface CategoryMasterPayload {
+  itemCategories?: MasterCategory[];
 }
 
-export async function fetchAllCategories(): Promise<CategoryRecord[]> {
-  const urls = [
-    `${MERCARI_MASTER_BASE_URL}/datasets/item_categories`,
-    `${MERCARI_MASTER_BASE_URL}/item_categories`
-  ];
-  let payload: MasterDataset<MasterCategory> | undefined;
-  let lastError: unknown;
-  for (const url of urls) {
-    try {
-      payload = await fetchJson<MasterDataset<MasterCategory>>(url, {
-        headers: {
-          'user-agent': CRAWLER_USER_AGENT,
-          'accept-language': BROWSER_ACCEPT_LANGUAGE,
-          accept: 'application/json'
-        }
-      });
-      break;
-    } catch (error) {
-      lastError = error;
-    }
-  }
-  if (!payload || !(payload.data?.length)) {
-    const pagePayload = await fetchCategoriesFromPage();
-    return buildCategoryRecords((pagePayload.itemCategories ?? []).map(category => ({
-      id: Number(category.id),
-      name: category.name,
-      parentId: category.parentCategoryId === undefined ? null : Number(category.parentCategoryId)
-    })).filter(category => Number.isFinite(category.id)));
-  }
-  if (!payload) {
-    throw new MarketplaceError(
-      'MCP_UPSTREAM_UNAVAILABLE',
-      `Failed to fetch Mercari categories: ${lastError instanceof Error ? lastError.message : String(lastError)}`
-    );
-  }
+interface CategoryCache {
+  fetchedAt: number;
+  records: CategoryRecord[];
+}
 
-  const categories = (payload.data ?? [])
+let categoryCache: CategoryCache | undefined;
+
+/**
+ * Fetches the category master dataset from the same REST endpoint the Mercari
+ * web client uses, then caches it in-process; the dataset is ~3.6MB and rarely
+ * changes, so a TTL cache keeps category lookups off the request path.
+ */
+export async function fetchAllCategories(forceRefresh = false): Promise<CategoryRecord[]> {
+  if (!forceRefresh && categoryCache && Date.now() - categoryCache.fetchedAt < CATEGORY_CACHE_TTL_MS) {
+    return categoryCache.records;
+  }
+  const dpopJwt = await generateDpopJwt('GET', ENDPOINTS.categoryMaster);
+  debugLog('tool', 'mercari_get_categories');
+  debugLog('request URL', ENDPOINTS.categoryMaster);
+  const payload = await mercariRest<CategoryMasterPayload>(ENDPOINTS.categoryMaster, dpopJwt, { method: 'GET' });
+  const source = payload.itemCategories ?? [];
+  if (source.length === 0) {
+    throw new MarketplaceError('MCP_PROVIDER_ERROR', 'Mercari category master returned no categories');
+  }
+  const categories = source
     .filter(category => category.status !== 'inactive')
     .map(category => ({
       id: Number(category.id),
       name: category.name ?? '',
-      parentId: category.parent_category_id === undefined ? null : Number(category.parent_category_id)
+      parentId: category.parentCategoryId === undefined ? null : Number(category.parentCategoryId)
     }))
-    .filter(category => Number.isFinite(category.id));
-  return buildCategoryRecords(categories);
+    .filter(category => Number.isFinite(category.id) && (category.parentId === null || Number.isFinite(category.parentId)));
+  debugLog('category master', { total: source.length, active: categories.length });
+  const records = buildCategoryRecords(categories);
+  categoryCache = { fetchedAt: Date.now(), records };
+  return records;
 }
 
 export function buildCategoryRecords(
   input: Array<{ id: number; name: string; parentId: number | null }>
 ): CategoryRecord[] {
   const byId = new Map<number, CategoryRecord>();
-  for (const [index, item] of input.entries()) {
+  for (const item of input) {
     byId.set(item.id, {
       id: item.id,
       name: item.name,
@@ -78,8 +66,6 @@ export function buildCategoryRecords(
       level: 0,
       pathNames: []
     });
-    if (!byId.get(item.id)?.pathNames) continue;
-    void index;
   }
 
   const children = new Map<number, number[]>();
@@ -131,6 +117,7 @@ export function filterCategories(
     result = result.filter(record => record.level === 1);
   }
   if (keyword) {
+    // Keyword search spans every hierarchy level, not just roots.
     result = result.filter(record =>
       record.name.toLowerCase().includes(keyword) ||
       record.pathNames.some(name => name.toLowerCase().includes(keyword))
