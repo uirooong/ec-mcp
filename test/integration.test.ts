@@ -26,9 +26,11 @@ liveTest('exclude keyword does not leak into the final response', async () => {
 });
 
 liveTest('keyword + category keeps the category constraint', async () => {
-  const result = await searchMercariItems({ keyword: 'iPhone', category_id: 5, limit: 5 });
-  if (result.items[0]) {
-    const detail = await fetchMercariItem(result.items[0].id);
+  const result = await searchMercariItems({ keyword: 'iPhone', category_id: 5, limit: 10 });
+  // Detail is only fetchable for classic items; Shops (beyond) ids have no /items/get.
+  const target = result.items.find(item => item.item_type === 'mercari');
+  if (target) {
+    const detail = await fetchMercariItem(target.id);
     assert.ok(detail.category.some(tier => tier.id === '5'));
   }
 });
