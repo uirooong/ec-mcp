@@ -1,0 +1,19 @@
+{
+  "compilerOptions": {
+    "target": "ES2023",
+    "module": "Preserve",
+    "rewriteRelativeImportExtensions": true,
+    "lib": ["ES2023", "DOM"],
+    "outDir": "dist",
+    "rootDir": "src",
+    "strict": true,
+    "exactOptionalPropertyTypes": true,
+    "noUncheckedIndexedAccess": true,
+    "noEmitOnError": true,
+    "declaration": false,
+    "sourceMap": false,
+    "verbatimModuleSyntax": true,
+    "types": ["node"]
+  },
+  "include": ["src/**/*.ts"]
+}
