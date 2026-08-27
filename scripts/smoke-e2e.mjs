@@ -1,0 +1,18 @@
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+const url = process.env.EC_MCP_URL ?? 'http://localhost:3011/mcp';
+const c = new Client({ name: 'e2e', version: '0.0.0' });
+await c.connect(new StreamableHTTPClientTransport(new URL(url)));
+const s = await c.callTool({ name: 'mercari_search', arguments: { keyword: 'iPhone', limit: 30 } });
+const data = JSON.parse(s.content[0].text);
+const types = data.items.reduce((a,i)=>{a[i.item_type]=(a[i.item_type]||0)+1;return a;},{});
+console.log('search count=', data.items.length, 'types=', JSON.stringify(types));
+const mid = data.items.find(i=>i.item_type==='mercari').id;
+const gi = await c.callTool({ name: 'mercari_get_item', arguments: { item: `https://jp.mercari.com/item/${mid}` } });
+const d = JSON.parse(gi.content[0].text);
+console.log('get_item(url) id=', d.id, 'status=', d.status, 'cond=', d.condition_id, 'created=', d.created_at!=null, 'cats=', d.category.length);
+const cat = await c.callTool({ name: 'mercari_get_categories', arguments: { parent_id: 98 } });
+console.log('cats(parent=98)=', JSON.parse(cat.content[0].text).length);
+const err = await c.callTool({ name: 'mercari_get_item', arguments: { item: 'nope' } });
+console.log('bad item isError=', Boolean(err.isError), 'code=', err.structuredContent?.code);
+await c.close(); process.exit(0);

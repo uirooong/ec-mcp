@@ -1,11 +1,15 @@
-import { fetchWithTimeout } from '../../http.ts';
-import { MarketplaceError } from '../../errors.ts';
-import {
-  BROWSER_ACCEPT_LANGUAGE, CRAWLER_USER_AGENT, MERCARI_WEB_BASE_URL
-} from './constants.ts';
+import { generateDpopJwt } from './dpop.ts';
+import { ENDPOINTS, MERCARI_WEB_BASE_URL } from './constants.ts';
+import { debugLog, mercariRest } from './rest-client.ts';
+import { MarketplaceError, MercariApiError, MercariParseError } from '../../errors.ts';
 import type { CategoryTier, ItemDetail } from '../../types.ts';
 
-interface HtmlItemPayload {
+interface ApiCategoryNode {
+  id?: number | string;
+  name?: string;
+}
+
+interface ApiItemPayload {
   id?: string;
   name?: string;
   price?: number | string;
@@ -13,24 +17,43 @@ interface HtmlItemPayload {
   status?: string;
   photos?: string[];
   thumbnails?: string[];
-  item_category?: { id: number; name: string; parent_category_id?: number; parent_category_name?: string; root_category_id?: number; root_category_name?: string };
-  parent_categories_ntiers?: Array<{ id: number; name: string }>;
+  item_category?: {
+    id?: number | string;
+    name?: string;
+    parent_category_id?: number | string;
+    parent_category_name?: string;
+    root_category_id?: number | string;
+    root_category_name?: string;
+  };
+  item_category_ntiers?: ApiCategoryNode & {
+    parent_category_id?: number | string;
+    parent_category_name?: string;
+    root_category_id?: number | string;
+    root_category_name?: string;
+  };
+  parent_categories_ntiers?: ApiCategoryNode[];
   item_condition?: { id?: number | string; name?: string };
   shipping_payer?: { id?: number | string; name?: string };
   shipping_method?: { id?: number | string; name?: string };
   shipping_from_area?: { id?: number | string; name?: string };
-  shipping_duration?: { name?: string };
+  shipping_duration?: { id?: number | string; name?: string };
   num_likes?: number | string;
-  comments?: unknown[];
   num_comments?: number | string;
+  comments?: unknown[];
   seller?: {
     id?: number | string;
     name?: string;
     ratings?: { good?: number; normal?: number; bad?: number };
-    num_sell_items?: number;
+    num_sell_items?: number | string;
   };
   updated?: number | string;
   created?: number | string;
+}
+
+interface ApiItemResponse {
+  result?: string;
+  data?: ApiItemPayload;
+  errors?: Array<{ code?: string; message?: string }>;
 }
 
 export function normalizeItemId(itemIdOrUrl: string): string {
@@ -42,109 +65,78 @@ export function normalizeItemId(itemIdOrUrl: string): string {
   return fromUrl.toLowerCase();
 }
 
-function decodeHtml(value: string): string {
-  return value
-    .replaceAll('&amp;', '&')
-    .replaceAll('&lt;', '<')
-    .replaceAll('&gt;', '>')
-    .replaceAll('&quot;', '"')
-    .replaceAll('&#39;', "'")
-    .replaceAll('&nbsp;', ' ');
+function numeric(value: number | string | undefined): number | null {
+  if (value === undefined || value === null || value === '') return null;
+  const parsedValue = Number(value);
+  return Number.isFinite(parsedValue) ? parsedValue : null;
 }
 
-function payloadFromRsc(html: string): HtmlItemPayload | undefined {
-  const anchorIndex = html.indexOf('/items/get');
-  if (anchorIndex < 0) return undefined;
-  const dataIndex = html.indexOf('"data":{', anchorIndex);
-  if (dataIndex < 0) return undefined;
-  let depth = 0;
-  let inString = false;
-  let escaped = false;
-  for (let index = dataIndex + 7; index < html.length; index++) {
-    const char = html[index];
-    if (inString) {
-      if (escaped) escaped = false;
-      else if (char === '\\') escaped = true;
-      else if (char === '"') inString = false;
-      continue;
-    }
-    if (char === '"') inString = true;
-    else if (char === '{') depth++;
-    else if (char === '}') {
-      depth--;
-      if (depth === 0) {
-        const candidate = html.slice(dataIndex + 7, index + 1);
-        try {
-          return JSON.parse(candidate) as HtmlItemPayload;
-        } catch {
-          try {
-            return JSON.parse(`"${candidate.replace(/"/g, '\\"')}"`) as unknown as HtmlItemPayload;
-          } catch {
-            return undefined;
-          }
-        }
-      }
-    }
-  }
-  return undefined;
+function normalizeStatus(value: string | undefined): ItemDetail['status'] {
+  if (value === 'on_sale' || value === 'ITEM_STATUS_ON_SALE') return 'on_sale';
+  if (value === 'sold_out' || value === 'ITEM_STATUS_SOLD_OUT') return 'sold_out';
+  if (value === 'trading' || value === 'ITEM_STATUS_TRADING') return 'trading';
+  return 'unknown';
 }
 
-export function buildDetail(payload: HtmlItemPayload, itemId: string): ItemDetail {
-  const categoryTier: CategoryTier[] = [];
-  if (payload.item_category) {
-    if (payload.item_category.root_category_id !== undefined) {
-      categoryTier.push({
-        id: String(payload.item_category.root_category_id),
-        name: payload.item_category.root_category_name ?? ''
-      });
-    }
-    if (payload.item_category.parent_category_id !== undefined) {
-      categoryTier.push({
-        id: String(payload.item_category.parent_category_id),
-        name: payload.item_category.parent_category_name ?? ''
-      });
-    }
-    categoryTier.push({ id: String(payload.item_category.id), name: payload.item_category.name });
-  }
-  if (categoryTier.length === 0 && payload.parent_categories_ntiers?.length) {
-    for (const parent of payload.parent_categories_ntiers) {
-      categoryTier.push({ id: String(parent.id), name: parent.name });
-    }
-  }
-  const status = payload.status === 'on_sale' ? 'on_sale'
-    : payload.status === 'sold_out' ? 'sold_out'
-    : payload.status === 'trading' ? 'trading' : 'unknown';
-  const numeric = (value: number | string | undefined): number | null => {
-    if (value === undefined || value === null || value === '') return null;
-    const parsedValue = Number(value);
-    return Number.isFinite(parsedValue) ? parsedValue : null;
+/**
+ * Category chain: parent_categories_ntiers is the root-to-leaf ancestry and
+ * item_category_ntiers is the leaf tier; item_category is a legacy display
+ * field that can disagree with the ntiers chain, so it is only a fallback.
+ * Duplicate IDs are dropped while preserving order.
+ */
+export function buildCategoryTiers(payload: ApiItemPayload): CategoryTier[] {
+  const tiers: CategoryTier[] = [];
+  const seen = new Set<string>();
+  const push = (id: number | string | undefined, name: string | undefined): void => {
+    if (id === undefined || id === null || id === '') return;
+    const normalizedId = String(id);
+    if (seen.has(normalizedId)) return;
+    seen.add(normalizedId);
+    tiers.push({ id: normalizedId, name: name ?? '' });
   };
+  for (const parent of payload.parent_categories_ntiers ?? []) {
+    push(parent.id, parent.name);
+  }
+  if (payload.item_category_ntiers) {
+    push(payload.item_category_ntiers.id, payload.item_category_ntiers.name);
+  }
+  if (tiers.length === 0 && payload.item_category) {
+    const category = payload.item_category;
+    push(category.root_category_id, category.root_category_name);
+    push(category.parent_category_id, category.parent_category_name);
+    push(category.id, category.name);
+  }
+  return tiers;
+}
+
+export function buildItemDetail(payload: ApiItemPayload, itemId: string): ItemDetail {
+  const commentsCount = numeric(payload.num_comments) ?? payload.comments?.length ?? null;
   return {
     id: String(payload.id ?? itemId),
     name: payload.name ?? '',
-    price: Number(payload.price ?? 0),
-    status,
+    price: numeric(payload.price) ?? 0,
+    status: normalizeStatus(payload.status),
     description: payload.description ?? '',
-    photos: payload.photos?.length ? payload.photos : payload.thumbnails?.length ? payload.thumbnails : [],
-    category: categoryTier,
-    condition_id: payload.item_condition ? numeric(payload.item_condition.id) : null,
+    photos: payload.photos?.length ? payload.photos : payload.thumbnails ?? [],
+    category: buildCategoryTiers(payload),
+    condition_id: numeric(payload.item_condition?.id),
     condition_name: payload.item_condition?.name ?? null,
-    shipping_payer_id: payload.shipping_payer ? numeric(payload.shipping_payer.id) : null,
+    shipping_payer_id: numeric(payload.shipping_payer?.id),
     shipping_payer_name: payload.shipping_payer?.name ?? null,
-    shipping_method_id: payload.shipping_method ? numeric(payload.shipping_method.id) : null,
+    shipping_method_id: numeric(payload.shipping_method?.id),
     shipping_method_name: payload.shipping_method?.name ?? null,
-    shipping_from_area_id: payload.shipping_from_area ? numeric(payload.shipping_from_area.id) : null,
+    shipping_from_area_id: numeric(payload.shipping_from_area?.id),
     shipping_from_area_name: payload.shipping_from_area?.name ?? null,
     shipping_duration_name: payload.shipping_duration?.name ?? null,
     likes_count: numeric(payload.num_likes),
-    comments_count: payload.comments?.length ?? numeric(payload.num_comments),
+    comments_count: commentsCount,
     seller: payload.seller ? {
       id: String(payload.seller.id ?? ''),
       name: payload.seller.name ?? '',
       ratings_good: payload.seller.ratings?.good ?? null,
       ratings_normal: payload.seller.ratings?.normal ?? null,
       ratings_bad: payload.seller.ratings?.bad ?? null,
-      items_count: payload.seller.num_sell_items ?? null
+      items_count: numeric(payload.seller.num_sell_items)
     } : null,
     url: `${MERCARI_WEB_BASE_URL}/item/${itemId}`,
     updated_at: numeric(payload.updated),
@@ -152,84 +144,21 @@ export function buildDetail(payload: HtmlItemPayload, itemId: string): ItemDetai
   };
 }
 
-function detailByHtmlTags(html: string, itemId: string): Partial<ItemDetail> & { id: string } {
-  const title = decodeHtml((html.match(/<h1[^>]*>(?<value>[\s\S]*?)<\/h1>/)?.groups?.value ?? '').replace(/<[^>]+>/g, '')).trim();
-  const price = Number(html.match(/<meta name="product:price:amount" content="(?<value>[\d.]+)"/)?.groups?.value ?? '0');
-  const ogImage = html.match(/<meta property="og:image" content="(?<url>[^"]+)"/)?.groups?.url;
-  const getTestValue = (testId: string): string | null => {
-    const expression = new RegExp(`data-testid="${testId}">(?<value>[\\s\\S]*?)</span>`);
-    return decodeHtml((html.match(expression)?.groups?.value ?? '').replace(/<[^>]+>/g, '')).trim() || null;
-  };
-  const categoryLinks = [...html.matchAll(/href="\/search\?category_id=(?<id>\d+)"[^>]*>(?<name>[^<]+)<\/a>/g)]
-    .map(match => ({ id: match.groups!.id!, name: decodeHtml(match.groups!.name!).trim() }));
-  const sellerMatch = html.match(/data-testid="seller-link"[\s\S]*?<a href="\/user\/profile\/(?<id>\d+)"/);
-  return {
-    id: itemId,
-    name: title,
-    price: Number.isFinite(price) ? price : 0,
-    description: '',
-    photos: ogImage ? [ogImage] : [],
-    category: categoryLinks.length > 0 ? categoryLinks.reverse().map(category => ({ id: category.id, name: category.name })) : [],
-    condition_name: getTestValue('商品の状態'),
-    shipping_payer_name: getTestValue('配送料の負担'),
-    shipping_method_name: getTestValue('配送の方法'),
-    shipping_from_area_name: getTestValue('発送元の地域'),
-    shipping_duration_name: getTestValue('発送までの日数'),
-    seller: sellerMatch ? {
-      id: sellerMatch.groups!.id!,
-      name: decodeHtml(html.match(/data-testid="seller-link"[\s\S]*?<p class="[^"]*">(?<name>[^<]+)<\/p>/)?.groups?.name ?? ''),
-      ratings_good: null,
-      ratings_normal: null,
-      ratings_bad: null,
-      items_count: null
-    } : null
-  };
-}
-
 export async function fetchMercariItem(itemIdOrUrl: string): Promise<ItemDetail> {
+  debugLog('tool', 'mercari_get_item');
+  debugLog('input', { item: itemIdOrUrl });
   const itemId = normalizeItemId(itemIdOrUrl);
-  const url = `${MERCARI_WEB_BASE_URL}/item/${itemId}`;
-  let response: Response;
-  try {
-    response = await fetchWithTimeout(url, {
-      headers: {
-        'user-agent': CRAWLER_USER_AGENT,
-        accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        'accept-language': BROWSER_ACCEPT_LANGUAGE
-      }
-    });
-  } catch (error) {
-    throw new MarketplaceError(
-      'MCP_UPSTREAM_UNAVAILABLE', `Failed to fetch item page: ${error instanceof Error ? error.message : String(error)}`
-    );
+  const endpoint = `${ENDPOINTS.itemGet}?id=${encodeURIComponent(itemId)}`;
+  const dpopJwt = await generateDpopJwt('GET', endpoint);
+  const payload = await mercariRest<ApiItemResponse>(endpoint, dpopJwt, { method: 'GET' });
+  if (payload.result === 'error' || payload.data === undefined) {
+    const message = payload.errors?.[0]?.message ?? 'empty payload';
+    throw new MercariApiError(`Mercari item API error for ${itemId}: ${message}`, payload.errors);
   }
-  if (response.status === 404) throw new MarketplaceError('MCP_NOT_FOUND', `Mercari item not found: ${itemId}`);
-  if (!response.ok) throw new MarketplaceError('MCP_UPSTREAM_UNAVAILABLE', `Mercari item page HTTP ${response.status}`);
-  const html = await response.text();
-  const payload = payloadFromRsc(html);
-  if (!payload) {
-    const fallback = detailByHtmlTags(html, itemId);
-    if (!fallback.name) throw new MarketplaceError('MCP_PROVIDER_ERROR', `Could not parse Mercari item ${itemId}`);
-    return {
-      ...buildDetail({}, itemId),
-      name: fallback.name ?? '',
-      price: fallback.price ?? 0,
-      description: fallback.description ?? '',
-      photos: fallback.photos ?? [],
-      category: fallback.category ?? [],
-      condition_id: null,
-      condition_name: fallback.condition_name ?? null,
-      shipping_payer_id: null,
-      shipping_payer_name: fallback.shipping_payer_name ?? null,
-      shipping_method_id: null,
-      shipping_method_name: fallback.shipping_method_name ?? null,
-      shipping_from_area_id: null,
-      shipping_from_area_name: fallback.shipping_from_area_name ?? null,
-      shipping_duration_name: fallback.shipping_duration_name ?? null,
-      likes_count: null,
-      comments_count: null,
-      seller: fallback.seller ?? null
-    };
+  const detail = buildItemDetail(payload.data, itemId);
+  if (!detail.id || !detail.name) {
+    throw new MercariParseError(`Mercari item API returned an unusable payload for ${itemId}`);
   }
-  return buildDetail(payload, itemId);
+  debugLog('item detail', { id: detail.id, name: detail.name, price: detail.price });
+  return detail;
 }
