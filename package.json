@@ -3,22 +3,17 @@
   "version": "0.1.0",
   "description": "Lightweight MCP server for marketplace data, starting with Mercari.",
   "type": "module",
-  "bin": {
-    "ec-mcp": "dist/index.js"
-  },
-  "main": "dist/index.js",
   "scripts": {
-    "build": "tsc -p tsconfig.json",
-    "test": "node --import ./scripts/register-ts.js --test test/**/*.test.ts",
-    "start": "node dist/index.js",
-    "dev": "node --import ./scripts/register-ts.js src/index.ts"
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "bun test",
+    "start": "bun src/index.ts",
+    "smoke": "bun scripts/smoke.mjs"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.17.0"
+    "@modelcontextprotocol/sdk": "^1.30.0"
   },
   "devDependencies": {
-    "@types/node": "^24.0.0",
-    "amaro": "^0.4.1",
+    "@types/bun": "^1.3.13",
     "typescript": "^5.5.4"
   }
 }

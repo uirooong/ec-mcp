@@ -2,23 +2,30 @@
 
 Lightweight Model Context Protocol server for Japanese marketplaces. Mercari is implemented first.
 
-## Install / Build
+## Install / Run
 
 ```bash
-npm install
-npm run build
+bun install
 ```
 
-Register this command as a stdio MCP server:
+## Run
 
 ```bash
-node dist/index.js
+bun src/index.ts
 ```
 
-During development:
+The MCP Streamable HTTP endpoint is `http://localhost:3001/mcp`. `PORT` is configurable.
 
 ```bash
-npm run dev
+curl http://localhost:3001/health
+```
+
+## Development
+
+```bash
+bun test
+bun run typecheck
+bun run smoke
 ```
 
 ## Tools

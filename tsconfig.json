@@ -6,6 +6,7 @@
     "lib": ["ES2023", "DOM"],
     "outDir": "dist",
     "rootDir": "src",
+    "noEmit": true,
     "strict": true,
     "exactOptionalPropertyTypes": true,
     "noUncheckedIndexedAccess": true,
@@ -13,7 +14,7 @@
     "declaration": false,
     "sourceMap": false,
     "verbatimModuleSyntax": true,
-    "types": ["node"]
+    "types": ["bun"]
   },
   "include": ["src/**/*.ts"]
 }
