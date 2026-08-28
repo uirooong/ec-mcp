@@ -11,10 +11,15 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 import { getProvider } from './provider-registry.ts';
 import { yahooFleamarketProvider } from './providers/yahoo/index.ts';
+import { yahooAuctionProvider } from './providers/yahoo-auction/index.ts';
 import { MarketplaceError } from './errors.ts';
 import type { SearchParams } from './types.ts';
 import type { CategoriesOptions } from './types.ts';
 import type { YahooCategoriesOptions, YahooSearchParams } from './providers/yahoo/types.ts';
+import type {
+  YahooAuctionCategoriesOptions,
+  YahooAuctionSearchParams
+} from './providers/yahoo-auction/types.ts';
 
 export function createServer(): Server {
   const server = new Server(
@@ -133,6 +138,57 @@ export function createServer(): Server {
             seller_id: { type: 'string', minLength: 1 }
           }
         }
+      },
+      {
+        name: 'yahoo_auction_search',
+        description: 'Search Yahoo! Auctions (ヤフオク!) listings with auction-aware filters (current price, buy-it-now, bids, end time).',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            keyword: { type: 'string', description: 'Search keyword (UTF-8, Japanese supported). Required unless category_id is given.' },
+            exclude_keyword: { type: 'string', description: 'Words to exclude; applied natively in the query and re-checked against titles.' },
+            category_id: { oneOf: [{ type: 'integer' }, { type: 'array', items: { type: 'integer' } }, { type: 'string', pattern: '^\d+(,\d+)*$' }], description: 'Yahoo! Auctions category id(s).' },
+            price_min: { type: 'integer', minimum: 0, description: 'Minimum current price (JPY).' },
+            price_max: { type: 'integer', minimum: 0, description: 'Maximum current price (JPY).' },
+            buy_now_price_min: { type: 'integer', minimum: 0 },
+            buy_now_price_max: { type: 'integer', minimum: 0 },
+            has_buy_now: { type: 'boolean', description: 'Only auctions offering Buy It Now.' },
+            condition: { type: ['array', 'string'], description: 'Condition code(s): NEW, USED10, USED20, USED40, USED60.' },
+            status: { enum: ['open', 'closed'], description: 'Auction status; defaults to open.' },
+            free_shipping: { type: 'boolean' },
+            shipping_from_area: { oneOf: [{ type: 'integer' }, { type: 'array', items: { type: 'integer' } }, { type: 'string' }], description: 'Prefecture code(s), e.g. 13 for Tokyo.' },
+            min_bids: { type: 'integer', minimum: 0, description: 'MCP-side filter over the returned JSON.' },
+            max_bids: { type: 'integer', minimum: 0, description: 'MCP-side filter over the returned JSON.' },
+            ending_within_minutes: { type: 'integer', minimum: 1, description: 'MCP-side filter: auctions ending within N minutes.' },
+            sort: { enum: ['current_price', 'buy_now_price', 'start_price', 'end_time', 'bid_count', 'watch_count'] },
+            order: { enum: ['asc', 'desc'] },
+            limit: { type: 'integer', minimum: 1, maximum: 100 },
+            offset: { type: 'integer', minimum: 0 }
+          }
+        }
+      },
+      {
+        name: 'yahoo_auction_get_item',
+        description: 'Get normalized Yahoo! Auctions detail (current/starting/buy-now price, bids, end time, shipping, seller) from an auction ID or URL.',
+        inputSchema: {
+          type: 'object',
+          required: ['item'],
+          properties: {
+            item: { type: 'string', minLength: 1 }
+          }
+        }
+      },
+      {
+        name: 'yahoo_auction_get_categories',
+        description: 'Get and filter the Yahoo! Auctions category tree: children by parent_id, top genres via root_only, or search all levels by keyword.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            keyword: { type: 'string' },
+            parent_id: { type: ['integer', 'string'], pattern: '^\d+$' },
+            root_only: { type: 'boolean', default: false }
+          }
+        }
       }
     ]
   }));
@@ -184,6 +240,25 @@ export function createServer(): Server {
             throw new MarketplaceError('MCP_INVALID_ARGUMENT', 'seller_id must be a string');
           }
           const result = await yahooFleamarketProvider.getSeller(args.seller_id);
+          return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+        }
+        case 'yahoo_auction_search': {
+          const result = await yahooAuctionProvider.search(args as YahooAuctionSearchParams);
+          return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+        }
+        case 'yahoo_auction_get_item': {
+          if (typeof args.item !== 'string') {
+            throw new MarketplaceError('MCP_INVALID_ARGUMENT', 'item must be a string');
+          }
+          const result = await yahooAuctionProvider.getItem(args.item);
+          return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+        }
+        case 'yahoo_auction_get_categories': {
+          const options: YahooAuctionCategoriesOptions = {};
+          if (typeof args.keyword === 'string') options.keyword = args.keyword;
+          if (args.parent_id !== undefined) options.parent_id = String(args.parent_id);
+          if (args.root_only !== undefined) options.root_only = Boolean(args.root_only);
+          const result = await yahooAuctionProvider.getCategories(options);
           return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
         }
         default:
